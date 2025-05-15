@@ -24,7 +24,7 @@ import websocket
 from py_mini_racer import MiniRacer
 
 from protobuf.douyin import *
-
+from PyQt5.QtCore import QObject, pyqtSignal
 
 @contextmanager
 def patched_popen_encoding(encoding='utf-8'):
@@ -37,7 +37,18 @@ def patched_popen_encoding(encoding='utf-8'):
     with patch.object(subprocess.Popen, '__init__', new_popen_init):
         yield
 
-
+class LiveSignals(QObject):
+    """信号类，用于与GUI通信"""
+    chat_msg = pyqtSignal(str, str, str)  # user_id, user_name, content
+    gift_msg = pyqtSignal(str, str, int)  # user_name, gift_name, count
+    like_msg = pyqtSignal(str, int)       # user_name, count
+    member_msg = pyqtSignal(str, str, str) # user_id, gender, user_name
+    social_msg = pyqtSignal(str, str)     # user_id, user_name
+    stats_msg = pyqtSignal(str, str)      # current, total
+    control_msg = pyqtSignal(int)         # status
+    room_status_msg = pyqtSignal(str, str, str) # nickname, user_id, status
+    
+    
 def generateSignature(wss, script_file='sign.js'):
     """
     出现gbk编码问题则修改 python模块subprocess.py的源码中Popen类的__init__函数参数encoding值为 "utf-8"
@@ -101,7 +112,8 @@ class DouyinLiveWebFetcher:
         self.live_url = "https://live.douyin.com/"
         self.user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) " \
                           "Chrome/120.0.0.0 Safari/537.36"
-    
+        # 添加信号对象
+        self.signals = LiveSignals()
     def start(self):
         self._connectWebSocket()
     
@@ -294,9 +306,14 @@ class DouyinLiveWebFetcher:
         """聊天消息"""
         message = ChatMessage().parse(payload)
         user_name = message.user.nick_name
-        user_id = message.user.id
+        user_id = str(message.user.id)
         content = message.content
         print(f"【聊天msg】[{user_id}]{user_name}: {content}")
+        try:
+            self.signals.chat_msg.emit(user_id, user_name, content)
+        except Exception as e:
+            print(f"发射信号失败: {e}")
+        
     
     def _parseGiftMsg(self, payload):
         """礼物消息"""
@@ -305,6 +322,10 @@ class DouyinLiveWebFetcher:
         gift_name = message.gift.name
         gift_cnt = message.combo_count
         print(f"【礼物msg】{user_name} 送出了 {gift_name}x{gift_cnt}")
+        try:
+            self.signals.gift_msg.emit(user_name, gift_name, gift_cnt)
+        except Exception as e:
+            print(f"发射信号失败: {e}")
     
     def _parseLikeMsg(self, payload):
         '''点赞消息'''
@@ -312,28 +333,44 @@ class DouyinLiveWebFetcher:
         user_name = message.user.nick_name
         count = message.count
         print(f"【点赞msg】{user_name} 点了{count}个赞")
+        try:
+            self.signals.like_msg.emit(user_name, count)
+        except Exception as e:
+            print(f"发射信号失败: {e}")
     
     def _parseMemberMsg(self, payload):
         '''进入直播间消息'''
         message = MemberMessage().parse(payload)
         user_name = message.user.nick_name
-        user_id = message.user.id
+        user_id = str(message.user.id)
         gender = ["女", "男"][message.user.gender]
         print(f"【进场msg】[{user_id}][{gender}]{user_name} 进入了直播间")
+        try:
+            self.signals.member_msg.emit(user_id, gender, user_name)
+        except Exception as e:
+            print(f"发射信号失败: {e}")
     
     def _parseSocialMsg(self, payload):
         '''关注消息'''
         message = SocialMessage().parse(payload)
         user_name = message.user.nick_name
-        user_id = message.user.id
+        user_id = str(message.user.id)
         print(f"【关注msg】[{user_id}]{user_name} 关注了主播")
+        try:
+            self.signals.social_msg.emit(user_id, user_name)
+        except Exception as e:
+            print(f"发射信号失败: {e}")
     
     def _parseRoomUserSeqMsg(self, payload):
         '''直播间统计'''
         message = RoomUserSeqMessage().parse(payload)
-        current = message.total
-        total = message.total_pv_for_anchor
+        current = str(message.total)
+        total = str(message.total_pv_for_anchor)
         print(f"【统计msg】当前观看人数: {current}, 累计观看人数: {total}")
+        try:
+            self.signals.stats_msg.emit(current, total)
+        except Exception as e:
+            print(f"发射信号失败: {e}")
     
     def _parseFansclubMsg(self, payload):
         '''粉丝团消息'''
@@ -373,6 +410,10 @@ class DouyinLiveWebFetcher:
         if message.status == 3:
             print("直播间已结束")
             self.stop()
+        try:
+            self.signals.control_msg.emit(message.status)
+        except Exception as e:
+            print(f"发射信号失败: {e}")
     
     def _parseRoomStreamAdaptationMsg(self, payload):
         message = RoomStreamAdaptationMessage().parse(payload)
