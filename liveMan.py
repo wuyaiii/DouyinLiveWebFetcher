@@ -11,6 +11,7 @@ import gzip
 import hashlib
 import random
 import re
+import json
 import string
 import subprocess
 import threading
@@ -48,7 +49,42 @@ class LiveSignals(QObject):
     control_msg = pyqtSignal(int)         # status
     room_status_msg = pyqtSignal(str, str, str) # nickname, user_id, status
     
-    
+class FavoritesManager:
+    def __init__(self, filename='favorites.json'):
+        self.filename = filename
+        self.favorites = self._load_favorites()
+
+    def _load_favorites(self):
+        try:
+            with open(self.filename, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            return {}
+
+    def save_favorites(self):
+        with open(self.filename, 'w', encoding='utf-8') as f:
+            json.dump(self.favorites, f, ensure_ascii=False, indent=2)
+
+    def add_favorite(self, room_id, nickname=''):
+        if room_id not in self.favorites:
+            self.favorites[room_id] = {
+                'nickname': nickname,
+                'timestamp': time.time()
+            }
+            self.save_favorites()
+            return True
+        return False
+
+    def remove_favorite(self, room_id):
+        if room_id in self.favorites:
+            del self.favorites[room_id]
+            self.save_favorites()
+            return True
+        return False
+
+    def get_favorites(self):
+        return self.favorites
+        
 def generateSignature(wss, script_file='sign.js'):
     """
     出现gbk编码问题则修改 python模块subprocess.py的源码中Popen类的__init__函数参数encoding值为 "utf-8"
@@ -99,7 +135,6 @@ def generateMsToken(length=107):
 
 
 class DouyinLiveWebFetcher:
-    
     def __init__(self, live_id):
         """
         直播间弹幕抓取对象
@@ -112,14 +147,46 @@ class DouyinLiveWebFetcher:
         self.live_url = "https://live.douyin.com/"
         self.user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) " \
                           "Chrome/120.0.0.0 Safari/537.36"
+        self.is_running = False
+        self.ws = None  # 添加ws属性
+        self.last_heartbeat = 0  # 添加心跳时间记录
+        self.heartbeat_interval = 5  # 心跳间隔时间
+        # self.stats = {
+        #     'chat_count': 0,
+        #     'gift_count': 0,
+        #     'like_count': 0,
+        #     'member_count': 0,
+        #     'total_gift_value': 0
+        # }
         # 添加信号对象
         self.signals = LiveSignals()
     def start(self):
         self._connectWebSocket()
     
     def stop(self):
-        self.ws.close()
+        """停止WebSocket连接"""
+        if hasattr(self, 'ws') and self.ws:
+            try:
+                if hasattr(self.ws, 'sock') and self.ws.sock:
+                    self.ws.close()
+            except Exception as e:
+                print(f"关闭WebSocket时发生错误: {e}")
+            finally:
+                self.ws = None
     
+    
+    def set_room_id(self, live_id):
+        """设置新的房间号"""
+        self.live_id = live_id
+        # # 重置统计数据
+        # self.stats = {
+        #     'chat_count': 0,
+        #     'gift_count': 0,
+        #     'like_count': 0,
+        #     'member_count': 0,
+        #     'total_gift_value': 0
+        # }
+        
     @property
     def ttwid(self):
         """
@@ -173,6 +240,9 @@ class DouyinLiveWebFetcher:
         room_status: 2 直播已结束
         room_status: 0 直播进行中
         """
+        if not self.room_id:
+            return None
+        
         url = ('https://live.douyin.com/webcast/room/web/enter/?aid=6383'
                '&app_name=douyin_web&live_id=1&device_platform=web&language=zh-CN&enter_from=web_live'
                '&cookie_enabled=true&screen_width=1536&screen_height=864&browser_language=zh-CN&browser_platform=Win32'
@@ -181,17 +251,27 @@ class DouyinLiveWebFetcher:
                f'&room_id_str={self.room_id}'
                '&enter_source=&is_need_double_stream=false&insert_task_id=&live_reason='
                '&msToken=&a_bogus=')
-        resp = requests.get(url, headers={
-            'User-Agent': self.user_agent,
-            'Cookie': f'ttwid={self.ttwid};'
-        })
-        data = resp.json().get('data')
-        if data:
-            room_status = data.get('room_status')
-            user = data.get('user')
-            user_id = user.get('id_str')
-            nickname = user.get('nickname')
-            print(f"【{nickname}】[{user_id}]直播间：{['正在直播', '已结束'][bool(room_status)]}.")
+        try:
+            resp = requests.get(url, headers={
+                'User-Agent': self.user_agent,
+                'Cookie': f'ttwid={self.ttwid};'
+            })
+            data = resp.json().get('data')
+            if data:
+                    room_status = data.get('room_status')
+                    user = data.get('user')
+                    if user:
+                        user_id = user.get('id_str')
+                        nickname = user.get('nickname')
+                        print(f"【{nickname}】[{user_id}]直播间：{['正在直播', '已结束'][bool(room_status)]}.")
+                        return {
+                            'nickname': nickname,
+                            'user_id': user_id,
+                            'status': room_status
+                        }
+        except Exception as e:
+            print(f"获取房间状态失败: {e}")
+        return None
     
     def _connectWebSocket(self):
         """
