@@ -30,11 +30,11 @@ from PyQt5.QtCore import QObject, pyqtSignal
 @contextmanager
 def patched_popen_encoding(encoding='utf-8'):
     original_popen_init = subprocess.Popen.__init__
-    
+
     def new_popen_init(self, *args, **kwargs):
         kwargs['encoding'] = encoding
         original_popen_init(self, *args, **kwargs)
-    
+
     with patch.object(subprocess.Popen, '__init__', new_popen_init):
         yield
 
@@ -48,7 +48,7 @@ class LiveSignals(QObject):
     stats_msg = pyqtSignal(str, str)      # current, total
     control_msg = pyqtSignal(int)         # status
     room_status_msg = pyqtSignal(str, str, str) # nickname, user_id, status
-    
+
 class FavoritesManager:
     def __init__(self, filename='favorites.json'):
         self.filename = filename
@@ -84,7 +84,7 @@ class FavoritesManager:
 
     def get_favorites(self):
         return self.favorites
-        
+
 def generateSignature(wss, script_file='sign.js'):
     """
     出现gbk编码问题则修改 python模块subprocess.py的源码中Popen类的__init__函数参数encoding值为 "utf-8"
@@ -100,19 +100,19 @@ def generateSignature(wss, script_file='sign.js'):
     md5 = hashlib.md5()
     md5.update(param.encode())
     md5_param = md5.hexdigest()
-    
+
     with codecs.open(script_file, 'r', encoding='utf8') as f:
         script = f.read()
-    
+
     ctx = MiniRacer()
     ctx.eval(script)
-    
+
     try:
         signature = ctx.call("get_sign", md5_param)
         return signature
     except Exception as e:
         print(e)
-    
+
     # 以下代码对应js脚本为sign_v0.js
     # context = execjs.compile(script)
     # with patched_popen_encoding(encoding='utf-8'):
@@ -162,22 +162,33 @@ class DouyinLiveWebFetcher:
         self.signals = LiveSignals()
     def start(self):
         self._connectWebSocket()
-    
+
     def stop(self):
         """停止WebSocket连接"""
         if hasattr(self, 'ws') and self.ws:
             try:
                 if hasattr(self.ws, 'sock') and self.ws.sock:
+                    # 简单调用close，不传额外参数
                     self.ws.close()
+                    print("【√】WebSocket连接关闭请求已发送")
             except Exception as e:
-                print(f"关闭WebSocket时发生错误: {e}")
+                print(f"【X】关闭WebSocket时发生错误: {e}")
             finally:
+                # 确保清理引用
+                ws_temp = self.ws
                 self.ws = None
-    
-    
+                # 额外尝试关闭底层socket
+                try:
+                    if ws_temp and hasattr(ws_temp, 'sock') and ws_temp.sock:
+                        ws_temp.sock.close()
+                except:
+                    pass
+
     def set_room_id(self, live_id):
         """设置新的房间号"""
         self.live_id = live_id
+        # 重置room_id，确保下次获取状态时使用新的room_id
+        self.__room_id = None
         # # 重置统计数据
         # self.stats = {
         #     'chat_count': 0,
@@ -186,7 +197,7 @@ class DouyinLiveWebFetcher:
         #     'member_count': 0,
         #     'total_gift_value': 0
         # }
-        
+
     @property
     def ttwid(self):
         """
@@ -206,7 +217,7 @@ class DouyinLiveWebFetcher:
         else:
             self.__ttwid = response.cookies.get('ttwid')
             return self.__ttwid
-    
+
     @property
     def room_id(self):
         """
@@ -229,11 +240,11 @@ class DouyinLiveWebFetcher:
             match = re.search(r'roomId\\":\\"(\d+)\\"', response.text)
             if match is None or len(match.groups()) < 1:
                 print("【X】No match found for roomId")
-            
+
             self.__room_id = match.group(1)
-            
+
             return self.__room_id
-    
+
     def get_room_status(self):
         """
         获取直播间开播状态:
@@ -242,7 +253,7 @@ class DouyinLiveWebFetcher:
         """
         if not self.room_id:
             return None
-        
+
         url = ('https://live.douyin.com/webcast/room/web/enter/?aid=6383'
                '&app_name=douyin_web&live_id=1&device_platform=web&language=zh-CN&enter_from=web_live'
                '&cookie_enabled=true&screen_width=1536&screen_height=864&browser_language=zh-CN&browser_platform=Win32'
@@ -263,7 +274,15 @@ class DouyinLiveWebFetcher:
                     if user:
                         user_id = user.get('id_str')
                         nickname = user.get('nickname')
-                        print(f"【{nickname}】[{user_id}]直播间：{['正在直播', '已结束'][bool(room_status)]}.")
+                        status_text = '正在直播' if room_status == 0 else '已结束'
+                        print(f"【{nickname}】[{user_id}]直播间：{status_text}.")
+
+                        # 发送房间状态信号
+                        try:
+                            self.signals.room_status_msg.emit(nickname, user_id, status_text)
+                        except Exception as e:
+                            print(f"发送房间状态信号失败: {e}")
+
                         return {
                             'nickname': nickname,
                             'user_id': user_id,
@@ -272,12 +291,12 @@ class DouyinLiveWebFetcher:
         except Exception as e:
             print(f"获取房间状态失败: {e}")
         return None
-    
+
     def _connectWebSocket(self):
         """
         连接抖音直播间websocket服务器，请求直播间数据
         """
-        wss = ("wss://webcast5-ws-web-hl.douyin.com/webcast/im/push/v2/?app_name=douyin_web"
+        wss = ("wss://webcast100-ws-web-lq.douyin.com/webcast/im/push/v2/?app_name=douyin_web"
                "&version_code=180800&webcast_sdk_version=1.0.14-beta.0"
                "&update_version_code=1.0.14-beta.0&compress=gzip&device_platform=web&cookie_enabled=true"
                "&screen_width=1536&screen_height=864&browser_language=zh-CN&browser_platform=Win32"
@@ -292,10 +311,10 @@ class DouyinLiveWebFetcher:
                f"&host=https://live.douyin.com&aid=6383&live_id=1&did_rule=3&endpoint=live_pc&support_wrds=1"
                f"&user_unique_id=7319483754668557238&im_path=/webcast/im/fetch/&identity=audience"
                f"&need_persist_msg_count=15&insert_task_id=&live_reason=&room_id={self.room_id}&heartbeatDuration=0")
-        
+
         signature = generateSignature(wss)
         wss += f"&signature={signature}"
-        
+
         headers = {
             "cookie": f"ttwid={self.ttwid}",
             'user-agent': self.user_agent,
@@ -311,40 +330,48 @@ class DouyinLiveWebFetcher:
         except Exception:
             self.stop()
             raise
-    
+
     def _sendHeartbeat(self):
         """
         发送心跳包
         """
-        while True:
+        # 使用更安全的方式检查WebSocket连接状态
+        while self.ws and hasattr(self.ws, 'sock') and self.ws.sock:
             try:
+                # 检查WebSocket连接是否仍然有效
+                if not self.ws or not hasattr(self.ws, 'sock') or not self.ws.sock:
+                    print("【X】WebSocket连接已关闭，停止心跳")
+                    break
+
                 heartbeat = PushFrame(payload_type='hb').SerializeToString()
                 self.ws.send(heartbeat, websocket.ABNF.OPCODE_PING)
                 print("【√】发送心跳包")
             except Exception as e:
-                print("【X】心跳包检测错误: ", e)
+                print(f"【X】心跳包检测错误: {e}")
                 break
             else:
                 time.sleep(5)
-    
+
+        print("【X】心跳线程退出")
+
     def _wsOnOpen(self, ws):
         """
         连接建立成功
         """
         print("【√】WebSocket连接成功.")
         threading.Thread(target=self._sendHeartbeat).start()
-    
+
     def _wsOnMessage(self, ws, message):
         """
         接收到数据
         :param ws: websocket实例
         :param message: 数据
         """
-        
+
         # 根据proto结构体解析对象
         package = PushFrame().parse(message)
         response = Response().parse(gzip.decompress(package.payload))
-        
+
         # 返回直播间服务器链接存活确认消息，便于持续获取数据
         if response.need_ack:
             ack = PushFrame(log_id=package.log_id,
@@ -352,7 +379,7 @@ class DouyinLiveWebFetcher:
                             payload=response.internal_ext.encode('utf-8')
                             ).SerializeToString()
             ws.send(ack, websocket.ABNF.OPCODE_BINARY)
-        
+
         # 根据消息类别解析消息体
         for msg in response.messages_list:
             method = msg.method
@@ -374,14 +401,14 @@ class DouyinLiveWebFetcher:
                 }.get(method)(msg.payload)
             except Exception:
                 pass
-    
+
     def _wsOnError(self, ws, error):
         print("WebSocket error: ", error)
-    
+
     def _wsOnClose(self, ws, *args):
-        self.get_room_status()
+        # 移除对get_room_status的调用，避免在WebSocket关闭时重新检查房间状态
         print("WebSocket connection closed.")
-    
+
     def _parseChatMsg(self, payload):
         """聊天消息"""
         message = ChatMessage().parse(payload)
@@ -393,8 +420,8 @@ class DouyinLiveWebFetcher:
             self.signals.chat_msg.emit(user_id, user_name, content)
         except Exception as e:
             print(f"发射信号失败: {e}")
-        
-    
+
+
     def _parseGiftMsg(self, payload):
         """礼物消息"""
         message = GiftMessage().parse(payload)
@@ -406,7 +433,7 @@ class DouyinLiveWebFetcher:
             self.signals.gift_msg.emit(user_name, gift_name, gift_cnt)
         except Exception as e:
             print(f"发射信号失败: {e}")
-    
+
     def _parseLikeMsg(self, payload):
         '''点赞消息'''
         message = LikeMessage().parse(payload)
@@ -417,7 +444,7 @@ class DouyinLiveWebFetcher:
             self.signals.like_msg.emit(user_name, count)
         except Exception as e:
             print(f"发射信号失败: {e}")
-    
+
     def _parseMemberMsg(self, payload):
         '''进入直播间消息'''
         message = MemberMessage().parse(payload)
@@ -429,7 +456,7 @@ class DouyinLiveWebFetcher:
             self.signals.member_msg.emit(user_id, gender, user_name)
         except Exception as e:
             print(f"发射信号失败: {e}")
-    
+
     def _parseSocialMsg(self, payload):
         '''关注消息'''
         message = SocialMessage().parse(payload)
@@ -440,7 +467,7 @@ class DouyinLiveWebFetcher:
             self.signals.social_msg.emit(user_id, user_name)
         except Exception as e:
             print(f"发射信号失败: {e}")
-    
+
     def _parseRoomUserSeqMsg(self, payload):
         '''直播间统计'''
         message = RoomUserSeqMessage().parse(payload)
@@ -451,13 +478,13 @@ class DouyinLiveWebFetcher:
             self.signals.stats_msg.emit(current, total)
         except Exception as e:
             print(f"发射信号失败: {e}")
-    
+
     def _parseFansclubMsg(self, payload):
         '''粉丝团消息'''
         message = FansclubMessage().parse(payload)
         content = message.content
         print(f"【粉丝团msg】 {content}")
-    
+
     def _parseEmojiChatMsg(self, payload):
         '''聊天表情包消息'''
         message = EmojiChatMessage().parse(payload)
@@ -466,27 +493,27 @@ class DouyinLiveWebFetcher:
         common = message.common
         default_content = message.default_content
         print(f"【聊天表情包id】 {emoji_id},user：{user},common:{common},default_content:{default_content}")
-    
+
     def _parseRoomMsg(self, payload):
         message = RoomMessage().parse(payload)
         common = message.common
         room_id = common.room_id
         print(f"【直播间msg】直播间id:{room_id}")
-    
+
     def _parseRoomStatsMsg(self, payload):
         message = RoomStatsMessage().parse(payload)
         display_long = message.display_long
         print(f"【直播间统计msg】{display_long}")
-    
+
     def _parseRankMsg(self, payload):
         message = RoomRankMessage().parse(payload)
         ranks_list = message.ranks_list
         print(f"【直播间排行榜msg】{ranks_list}")
-    
+
     def _parseControlMsg(self, payload):
         '''直播间状态消息'''
         message = ControlMessage().parse(payload)
-        
+
         if message.status == 3:
             print("直播间已结束")
             self.stop()
@@ -494,7 +521,7 @@ class DouyinLiveWebFetcher:
             self.signals.control_msg.emit(message.status)
         except Exception as e:
             print(f"发射信号失败: {e}")
-    
+
     def _parseRoomStreamAdaptationMsg(self, payload):
         message = RoomStreamAdaptationMessage().parse(payload)
         adaptationType = message.adaptation_type
